@@ -1,0 +1,180 @@
+
+
+   Pure SPARK components
+
+Some time ago Norman Feske wrote about [https://genodians.org/nfeske/2019-04-08-c++-spark-continuum - C++ and SPARK as a continuum].
+His article shows how SPARK can be used to implement critical functionality in SPARK while staying in a C++ component on Genode.
+He further describes a set of rules to prevent unexpected side effects in SPARK.
+Short speaking it boils down to stateless libraries written in SPARK that cannot interact with the environment but can consume and produce data.
+While this might sound restricted this approach can be used to implement security critical functionality such as parsers or protocol checkers that shield the C++ code from tainted data.
+
+But what if you do not want to leave the SPARK world and use all interfaces from SPARK including their formal properties.
+For this case I want to present our approach of pure SPARK components that can be created on Genode without needing to touch even a single line of C++.
+While the general idea was clear the way to its current implementation led over some seemingly insurmountable obstacles.
+
+
+Generating Ada bindings for C++
+-------------------------------
+
+One critical requirement for this project were Ada bindings for C++ interfaces.
+Ada itself provides great mechanisms to [https://www.adacore.com/gems/gem-61 - bind against C++] so taking a C++ class and creating a binding for it is fairly easy.
+Yet Genode obviously consists of far more than a single C++ class.
+While its API is manageable creating bindings for all its interfaces is a tedious and repetitive task, one that could be automated.
+As this insight isn't new GCC comes with an integrated [https://www.adacore.com/gems/gem-60-generating-ada-bindings-for-c-headers Ada binding generator], problem solved.
+
+Well, not really.
+While GCC takes care of symbol mangling and memory layouts the code it produces is nothing one would want to work with in terms of an API for building software.
+Furthermore Genode makes extensive use of complex C++ features, especially templates including their specialization mechanisms.
+As templates generate code on use they cannot be bound to Ada as the code one would bind against only exists if the same template instance exists somewhere in C++.
+GCC solves this problem by simply not supporting templates in its generator at all.
+Furthermore Ada specifiers have much stricter naming rules than C++ regarding the use and order of symbols.
+While C++ functions colliding with Ada keywords are correctly escaped by GCC those that start with an underscore, which is invalid in Ada, are simply omitted.
+Last but not least some constructs in Genodes C++ caused the generator to create code that wouldn't compile.
+Generating code with this tool would require much manual work to fix the issues while still receiving an deficient result.
+
+But we thought we can do better and started creating our own binding generator - [https://github.com/Componolit/Cappulada - Cappulada].
+It aimed to support all features we need to automatically bind Genode C++ to Ada while maintaining the semantic structure of the API.
+What was 'A::B::C' in C++ should become 'A.B.C' in Ada.
+Pointers and references should only become access types where absoloutely necessary since the API should be as SPARK compatible as possible.
+And using C++ template instances in Ada is a required feature as without them large parts of the API won't be accessible.
+
+We chose to use Python for this tool as the libclang is already available and makes parsing C++ quite easy and the development productivity is realatively high.
+We added all the features we thought we would need, namespaces, classes, types and so on.
+Unfortunately the libclang API we used was on a level that did not provide mangled symbols so we created our own implementation of the name mangling.
+Also templates were only available as template definitions and their instances that only consisted of the used template parameters.
+Since the Ada code generation was done from a custom intermediate representation templates couldn't exist there.
+So our own C++ template engine for our own intermediate representation written in Python emerged.
+
+As this is a quite complex project we used tests from the start on to keep its functionality monitored.
+So each added feature got its own test and some of them were tested with multiple features combined.
+This was done first for the code generation from the intermediate representation, then for parsing the C++ code into the intermediate representation.
+At the end integration tests were added that went from the C++ code and checked it agains the Ada code.
+And finally validation tests that included compiling the Ada code and running it to check if it yields the correct results.
+After multiple hundred tests we thought we would be ready for Genode.
+
+The first run on a Genode header made the parser crash immediately.
+We noticed that we didn't support a particular combination of typedefs of templates yet so we added this.
+The again forward declarations were something we didn't even thought about.
+And function pointers.
+And function pointers to class member functions.
+And partial template specializations.
+And full template specializations.
+And function templates.
+Finding semantic and technical mappings for all these C++ features in Ada wasn't always an easy task.
+And with each single feature we supported a new one emerged.
+And if we supported enough features a combination of some would result in behaviour we didn't expect.
+At the end we had a tool in a similar half functioning state as the GCC binding generator but we came to the insight why this tool was in this state.
+
+
+Back to hand made APIs
+----------------------
+
+With the realization that generated bindings are not feasible and both binding and API need to be created by hand a new freedom emerged.
+This API should not resemble any C++ characteristics or that of any other language it will run on.
+The goal was to create a pure SPARK API for asynchronous verified components.
+The result is the [https://github.com/Componolit/ada-interface/tree/master - Componolit Ada Interface (CAI)], an interface collection that provides component startup, shutdown and platform interaction.
+
+All interfaces can provide and receive procedures and functions.
+Provided subprograms are simply package functions or procedures while received ones are formal parameters of generic packages.
+The first interface of any component is the 'Cai.Component' interface.
+It receives a 'Construct' and 'Destruct' procedure that are called on component startup and shutdown repectively and a 'Vacate' procedure that tells the platform that the component wants to be destructed.
+A simple component that only exits with a success status code would look as follows:
+
+! with Cai.Types;
+! with Cai.Component;
+!
+! package Component with
+!    SPARK_Mode
+! is
+!
+!    procedure Construct (Cap : Cai.Types.Capability);
+!    procedure Destruct;
+!
+!    package My_Component is new Cai.Component (Construct, Destruct);
+!
+! end Component;
+
+The spec is unspectacular as it only declares the two procedures and instantiates the component package.
+A speciality of this package is that it can only be instantiated once while all other generic packages can have an arbitrary number of instances.
+The 'Construct' procedure also gets a capability object passed that can be used to initialize platform sessions.
+It is only passed to this method and without this capability no platform interaction can happen.
+The body of our component just tells the platform in the construct procedure that it wants to exit successfully:
+
+! package body Component with
+!    SPARK_Mode
+! is
+!
+!    procedure Construct (Cap : Cai.Types.Capability)
+!    is
+!    begin
+!       My_Component.Vacate (Cap, My_Component.Success);
+!    end Construct;
+!
+!    procedure Destruct
+!    is
+!    begin
+!       null;
+!    end Destruct;
+!
+! end Component;
+
+As seen telling the platform the desire to exit, which is a platform interaction also requires the use of the capability.
+Let's take our component to the next level of programming tutorials, the hello world.
+To do this a log session interface needs to be added to the body:
+
+! with Cai.Log;
+! with Cai.Log.Client;
+!
+! package body Component with
+!    SPARK_Mode
+! is
+!
+!    Log : Cai.Log.Client_Session := Cai.Log.Client.Create;
+!
+!    procedure Construct (Cap : Capability)
+!    is
+!    begin
+!       Cai.Log.Client.Initialize (Log, Cap);
+!       if Cai.Log.Client.Initialized (Log) then
+!          Cai.Log.Client.Info (Log, "Hello World!");
+!          My_Component.Vacate (Cap, My_Component.Success);
+!       else
+!          My_Component.Vacate (Cap, My_Component.Failure);
+!       end if;
+!    end Construct;
+!
+!    procedure Destruct
+!    is
+!    begin
+!       if Cai.Log.Client.Initialized (Log) then
+!          Cai.Log.Client.Finalize (Log);
+!       end if;
+!    end Destruct;
+!
+! end Component;
+
+The 'Client_Session' is a log session object that resides in the component package.
+As it denotes platform state it is limited since a change on a copy would not lead to a change on the original object and therefore allowing to create objects with inconsistent state.
+As it is a limited type the data flow initialization must be done by a function which in this case is the 'Create' function.
+Before the session object can be used it needs to be initialized on the platform.
+This is only allowed if the capability is supplied.
+As there is no guarantee that the platform actually initialized the object we still need to check its status before use.
+If the initialization worked a log message is printed and the component sends a success exit to the platform, if not a failure is sent.
+The platform, being notified about the desired exit, will at some point call the 'Destruct' procedure which can be used to close all remaining sessions.
+In this case the log session is finalized if it is still active.
+
+
+Conclusion
+----------
+
+This implementation provides a pure SPARK environment that allows full interaction with the platform.
+Platform states and subprogram behaviour is expressed by function contracts and proof functions so that components can prove functional properties over the use of platform interfaces.
+Although this proof information isn't complete yet it already provides a powerful tool to write complex but robust components.
+
+The high quality of the interface comes at a cost that each interface requires a thick binding and might be subject to change in its early states until the be variation for proof and usage is found.
+As needs to be done for each interface by hand there is currently only a small set of interfaces which are Log, Block, Timer and Configuration.
+On the other hand any platform integration such as setting up signal handlers and callback functions is done by the library providing a high level of abstraction from the platform.
+This allows porting to multiple different platforms which has been done for Linux.
+This enables complex software to run unchanged on multiple platforms.
+As an example we implemented a block device tester that writes and reads random data in a random order, hashes over it and then checks if both hashes are correct.
+It runs unmodified on both Genode and Linux.
