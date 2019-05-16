@@ -1,4 +1,4 @@
-Johannes is Security Architect at Componolit.
+Johannes is security architect at Componolit.
 He's working on component based systems, mostly with Ada, and formal verification in SPARK.
 His further topics are platform enablement for Ada and drivers.
 
