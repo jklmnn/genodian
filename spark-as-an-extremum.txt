@@ -7,6 +7,7 @@ His article shows how [https://learn.adacore.com/courses/intro-to-spark/index.ht
 He further describes a set of rules to prevent unexpected side effects in SPARK.
 In short it boils down to stateless libraries written in SPARK that cannot interact with the environment but can consume and produce data.
 While this might sound restricted at first glance this approach can be used to strengthen the security of existing software such as parsers or protocol checkers that shield the C++ code from tainted data.
+We also applied this method successfully outside of Genode by replacing the C++ parser of the [https://github.com/Componolit/fizz - Fizz TLS library] by our own SPARK implementation.
 
 But what if you want to go beyond stateless parts written in SPARK and do a full dataflow analysis and proof over the whole component including its interaction with the platform?
 For this case I want to present our approach of pure SPARK components that can be created on Genode without needing to touch even a single line of C++.
@@ -21,7 +22,7 @@ One critical requirement for this project were Ada bindings for C++ interfaces.
 Ada itself provides great mechanisms to [https://www.adacore.com/gems/gem-61 - bind to C++] so taking a C++ class and creating a binding for it is fairly easy.
 Yet Genode obviously consists of far more than a single C++ class.
 While its API is manageable creating bindings for all its interfaces is a tedious and repetitive task, one that could be automated.
-As this insight isn't new GCC comes with an integrated [https://www.adacore.com/gems/gem-60-generating-ada-bindings-for-c-headers Ada binding generator], problem solved.
+As this insight isn't new GCC comes with an integrated [https://www.adacore.com/gems/gem-60-generating-ada-bindings-for-c-headers - Ada binding generator], problem solved.
 
 Well, not really.
 While GCC takes care of symbol mangling and memory layouts the code it produces is nothing one would want to work with in terms of an API for building software.
@@ -70,7 +71,7 @@ At the end we had a tool in a similar but different half functioning state as th
 Back to hand made APIs
 ----------------------
 
-With the realization that generated bindings are not feasible and both binding and API need to be created by hand previous API limitations such as function that are not allowed in SPARK could be removed.
+With the realization that generated bindings are not feasible and both binding and API need to be created by hand previous API limitations such as functions that are not allowed in SPARK could be removed.
 This API should not resemble any characteristics of any language or platform that implements it.
 The goal was to create a pure SPARK API for asynchronous verified components.
 The result is the [https://github.com/Componolit/ada-interface/tree/master - Componolit Ada Interface (CAI)], an interface collection that provides component startup, shutdown and platform interaction.
@@ -189,7 +190,8 @@ To prevent this 'Initialize' comes with a precondition:
 !    SPARK_Mode
 ! is
 !
-!    procedure Initialize (Client : Client_Session; Cap : Cai.Types.Capability) with
+!    procedure Initialize (Client : in out Client_Session;
+!                          Cap    :        Cai.Types.Capability) with
 !       Pre => not Initialized (Client);
 !
 !    ...
@@ -231,4 +233,4 @@ This allows porting to multiple different platforms which has been done for Linu
 This enables complex software to run unchanged on multiple platforms.
 As an example we implemented a block device tester that writes and reads random data in a random order, hashes over it and then checks if both hashes are correct.
 It runs unmodified on both Genode and Linux.
-Support for native Muen components is also planned.
+Support for components running on the [https://muen.sk - Muen separation kernel] natively is also planned.
